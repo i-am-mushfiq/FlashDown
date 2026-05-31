@@ -9,6 +9,16 @@ that motivated the change.
 
 ## [Unreleased]
 
+### Fixed
+- Mouse-wheel scrolling really works now. The #10 fix forwarded wheel
+  events from the main window's WndProc, but on Win10/11 wheel goes to
+  the window under the cursor — the `AtlAxWin140` host control — which
+  doesn't reach the main window. Replaced with a thread-local
+  `WH_GETMESSAGE` hook that rewrites the target HWND to the inner
+  `Internet Explorer_Server` whenever a wheel event lands inside the
+  host. Non-invasive (no `GWLP_WNDPROC` swap, so ATL's hosting state
+  stays intact). Closes #12.
+
 ### Added
 - Initial public release of the v1.0 codebase (PRD-driven implementation).
 - Notion-dark Markdown preview rendered via Trident (`AtlAxWin`).
