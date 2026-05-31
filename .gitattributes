@@ -1,0 +1,17 @@
+# Default: normalise text files to LF in the repo, restore native EOL on checkout
+* text=auto
+
+# Source files: text, LF in repo
+*.cpp     text eol=lf
+*.h       text eol=lf
+*.c       text eol=lf
+*.md      text eol=lf
+*.rc      text eol=lf
+*.manifest text eol=lf
+*.vcxproj text eol=lf
+*.reg     text eol=lf
+
+# Binary
+*.ico     binary
+*.png     binary
+*.exe     binary

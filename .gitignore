@@ -1,0 +1,38 @@
+# Build output
+/x64/
+/x86/
+/Win32/
+/Debug/
+/Release/
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.idb
+*.exe
+*.log
+*.tlog
+*.map
+
+# Visual Studio cruft
+.vs/
+*.user
+*.suo
+*.sdf
+*.opensdf
+*.aps
+*.ipdb
+*.iobj
+*.vcxproj.filters
+
+# OS / editor
+Thumbs.db
+.DS_Store
+*.swp
+*.swo
+
+# Temporary scratch / diagnostic files
+crash_*.txt
+msg_log.txt
+*.bat
