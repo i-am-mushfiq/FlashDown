@@ -9,6 +9,11 @@ that motivated the change.
 
 ## [Unreleased]
 
+### Changed
+- Window opens **maximized** by default instead of the PRD's 900x700.
+  The restore size and the 400x300 minimum still apply when the user
+  un-maximizes. Closes #16.
+
 ### Fixed
 - Mouse-wheel scrolling really works now. The #10 fix forwarded wheel
   events from the main window's WndProc, but on Win10/11 wheel goes to

@@ -102,7 +102,10 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR lpCmdLine, int)
     HWND hwnd = MainWindow::Create(hInst);
     if (!hwnd) return 1;
 
-    ShowWindow(hwnd, SW_SHOWNORMAL);
+    // Open maximized so the preview fills the screen on launch (#16).
+    // The restore state still respects the 900x700 / 400x300 min from
+    // FR6, so users who un-maximize fall back to a sensible window.
+    ShowWindow(hwnd, SW_SHOWMAXIMIZED);
     UpdateWindow(hwnd);
 
     // Create the browser control HERE — in wWinMain, not inside any window
