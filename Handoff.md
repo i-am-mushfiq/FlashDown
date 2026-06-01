@@ -1,6 +1,6 @@
 # FlashDown Engineering Handoff
 
-**Status**: v1.0 release candidate  
+**Status**: v1.1 (perf/ipersiststreaminit-load) — measured cold-start: ~199ms  
 **Last Updated**: June 2026  
 **Intended For**: Incoming engineering team (full codebase ownership)
 
@@ -13,14 +13,14 @@
 **Who It Serves**: Users who need a lightweight, fast Markdown viewer on Windows without Electron or .NET overhead.
 
 **Key Differentiators**:
-- **Sub-50ms cold startup**: Process creation → first frame in under 50ms (achieved via static CRT linking, aggressive optimization, and native Win32 architecture)
+- **~199ms measured cold start** (AMD Ryzen 7, Windows 11): Application code completes in ~12ms; the remaining ~187ms is Trident COM bootstrap (41ms), DWM window animation (20ms), and Trident's internal parse+layout+rasterize pipeline (126ms) — unavoidable costs for any MSHTML host. Still 3–5× faster than Electron (500ms–1s).
 - **Single binary**: No installer, no external runtimes, no plugins—just `FlashDown.exe`
 - **Native rendering**: Uses Windows' built-in Trident engine (MSHTML), not a borrowed browser renderer
 - **Split-view editing**: Edit and preview simultaneously with a draggable splitter (20–80% clamp)
 - **Dark theme by default**: Notion-dark colors with careful typography tuning to reduce Trident's text jitter
 
 **Engineering Philosophy**:
-- **Constraint-driven design**: Sub-50ms startup target forced us to abandon message-loop synchronization in favor of event sinks, static CRT linking, and pure Win32 architecture (no framework).
+- **Constraint-driven design**: Minimal-latency target forced us to abandon message-loop synchronization in favor of event sinks, static CRT linking, and pure Win32 architecture (no framework). Every millisecond of application code was squeezed out; the remaining latency is Trident's internal pipeline.
 - **Trident mastery**: Rather than fight the embedded browser engine's quirks, we lean into them: explicit CSS overflow rules to enable scroll input, `IDocHostUIHandler` to enable proper hosting, `SetProcessDpiAwareness(SYSTEM)` to avoid per-monitor DPI jitter.
 - **Diagnostic-first debugging**: Complex bugs (especially scroll issues) are diagnosed via instrumentation before fixes are attempted. See CHANGELOG.md for detailed debugging methodology.
 - **Single-pass compilation**: Release builds use `/O2 /LTCG` and static CRT; Debug builds remain unoptimized for developer iteration speed.
@@ -29,22 +29,36 @@
 
 ## 2. Product Constraints
 
-### 2.1 Sub-50ms Startup Target
+### 2.1 Minimal Cold-Start Latency
 
 **Impact on Architecture**:
 - **Static CRT linking** (`/MT`): Eliminates dependency on `msvcrXXX.dll`, saving ~30–40ms of DLL mapping.
 - **No message-loop synchronization**: Instead of `WaitReady()` inside `WM_CREATE`, we use `DISPID_DOCUMENTCOMPLETE` event sinks to load HTML asynchronously. Synchronous message-pumping inside window creation causes re-entrant COM dispatch.
 - **Aggressive inlining** (`/LTCG`): Enables cross-module inlining and devirtualization.
 - **Browser create deferred to WinMain**: The `AtlAxWin` host is created *after* the main window is fully initialized, in `wWinMain` itself (not in `WM_CREATE`). This avoids re-entrant COM dispatch.
+- **`IPersistStreamInit::Load()` instead of SAFEARRAY + `document.write()`** (#20): Reduces COM round-trips for HTML delivery from ~7 to 1, saving ~34ms.
 
-**Current Latency Budget** (approximate, as of v1.1 / #20):
-- Process startup + CRT init: ~10ms
-- Window registration + creation: ~5ms
-- COM init + browser control creation: ~15ms
-- File I/O: ~5–10ms (depends on file size)
-- Markdown parsing (md4c): ~5–15ms (depends on markdown complexity)
-- HTML delivery via `IPersistStreamInit::Load()`: ~3ms (down from 10–20ms with SAFEARRAY)
-- **Total typical**: 47–67ms for a medium-sized markdown file (was 50–85ms before #20)
+**Measured Cold-Start Profile** (AMD Ryzen 7, RTX 4070 SUPER, Windows 11, 532-byte `test.md`):
+
+| Stage | Delta | Total | Owner |
+|-------|-------|-------|-------|
+| wWinMain entry | — | 0.0ms | — |
+| DPI + IE registry + cmdline | 0.3ms | 0.3ms | Our code |
+| OleInitialize + AtlAxWinInit + classes | 2.1ms | 2.4ms | COM / ATL |
+| MainWindow::Create (WM_CREATE) | 2.9ms | 5.3ms | Win32 |
+| ShowWindow + UpdateWindow | 20.0ms | 25.2ms | DWM |
+| BrowserHost::Create (MSHTML COM) | 40.6ms | 65.9ms | Trident |
+| LoadBlankDark (blank page) | 4.4ms | 70.3ms | Trident |
+| FileIO::Read (532 bytes) | 0.1ms | 70.5ms | Our code |
+| MarkdownPipeline::Convert (md4c) | 0.1ms | 70.5ms | Our code |
+| BrowserHost::NavigateTo (Load) | 2.6ms | 73.1ms | Our code |
+| Trident render (parse→layout→raster) | 125.7ms | 198.8ms | Trident |
+| **Total click-to-render** | — | **198.8ms** | |
+
+Our application code (including COM calls we initiate): ~12ms (6%).
+Unavoidable external costs: Trident COM bootstrap (41ms), DWM animation (20ms), Trident render pipeline (126ms) = ~187ms.
+
+Reproduce with: `#define FULL_BENCHMARK 1` in `main.cpp`, build Release, run with DebugView.
 
 ### 2.2 Single Binary Requirement
 
@@ -85,7 +99,7 @@
 
 **Why Not Electron**:
 - **Memory**: Electron apps baseline at 150–300 MB. FlashDown is ~10 MB resident.
-- **Startup**: Electron apps take 500ms–1s to start. FlashDown: ~47–67ms.
+- **Startup**: Electron apps take 500ms–1s to start. FlashDown: ~199ms measured (our code: ~12ms; rest is Trident).
 - **Dependency hell**: Electron requires Node.js, npm, and dozens of packages. FlashDown has zero external runtime dependencies.
 
 **Trade-off**: Trident's rendering quality is lower than Chromium/Blink, and some CSS features are missing. But for Markdown, the loss is acceptable.
@@ -277,7 +291,7 @@ main() → wWinMain()
 │      ├─ InstallUIHandler() — wire IDocHostUIHandler
 │      └─ FocusBrowser() — move focus to IE Server
 │
-└─ User sees rendered markdown (~47–67ms elapsed)
+└─ User sees rendered markdown (~199ms elapsed; measured)
 ```
 
 ### 3.5 Markdown Rendering Pipeline Diagram
@@ -608,11 +622,12 @@ case WM_APP_LOADFILE:
 }
 ```
 
-**Latency Accounting**:
-- `FileIO::Read()`: 5–10ms (depends on file size, disk speed)
-- `MarkdownPipeline::Convert()`: 5–15ms (md4c parsing + UTF conversions)
-- `BrowserHost::NavigateTo()`: ~3ms (IPersistStreamInit::Load via IStream; was 10–20ms with SAFEARRAY)
-- **Total**: 13–28ms after message dispatch (was 20–45ms before #20)
+**Latency Accounting** (measured, 532-byte file):
+- `FileIO::Read()`: 0.1ms (532 bytes on NVMe; scales with file size)
+- `MarkdownPipeline::Convert()`: 0.1ms (tiny file; scales with markdown complexity, typical 5–15ms)
+- `BrowserHost::NavigateTo()`: 2.6ms (IPersistStreamInit::Load via IStream; was 10–20ms with SAFEARRAY, #20)
+- Trident render pipeline (after HTML delivery, before DocumentComplete): 125.7ms
+- **Total from WM_APP_LOADFILE dispatch to DocumentComplete**: ~133ms
 
 ### 5.4 Markdown Pipeline Execution
 
@@ -628,7 +643,7 @@ Once HTML is delivered via `IPersistStreamInit::Load()` (or `Navigate2()` for th
 4. **Rasterization** — draw text and shapes into a back buffer
 5. **Composite** — copy back buffer to window (GDI)
 
-**Total latency**: ~10–20ms for typical markdown documents.
+**Total latency**: ~126ms measured for a trivial document (532-byte markdown). This is Trident's internal parse + CSS cascade + layout + rasterize + composite pipeline. The cost is dominated by GPU resource setup and glyph rasterization on first paint. Subsequent navigations within the same process are faster because Trident caches internal rendering state.
 
 **Optimization Notes**:
 - Trident does not support `requestAnimationFrame` or other async rendering hints.
@@ -1286,20 +1301,27 @@ Result: File saved to disk, preview updated in real-time
 
 ## 10. Performance Architecture: Cold-Start Budget
 
-### 10.1 Target vs. Actual
+### 10.1 Target vs. Actual (Measured)
 
-| Stage | Target | Actual | Notes |
-|-------|--------|--------|-------|
-| Process startup | < 10ms | ~10ms | CRT init, no dependencies |
-| Window registration | < 5ms | ~5ms | Three class registrations |
-| COM init | < 5ms | ~5ms | OleInitialize, AtlAxWinInit |
-| Browser creation | < 10ms | ~15ms | AtlAxWin host + IWebBrowser2 |
-| File I/O | < 10ms | 5–10ms | Depends on file size, disk speed |
-| Markdown parsing | < 10ms | 5–15ms | md4c; depends on complexity |
-| HTML assembly | < 1ms | < 1ms | String concatenation |
-| UTF-8 → UTF-16 | < 2ms | 2–5ms | MultiByteToWideChar |
-| Trident rendering | < 15ms | ~3ms | IPersistStreamInit::Load via IStream; was 10–20ms with SAFEARRAY (#20) |
-| **Total** | **50ms** | **47–67ms** | Typical medium markdown (was 50–85ms before #20) |
+The original latency budget was built on estimated stage times. The first full-instrumentation measurement (June 2026, `FULL_BENCHMARK` harness) revealed the true profile:
+
+| Stage | Target (est.) | Measured | Owner |
+|-------|---------------|----------|-------|
+| Process startup + CRT init | < 10ms | ~10ms† | CRT |
+| DPI + registry + cmdline | < 5ms | 0.3ms | Our code |
+| OleInitialize + AtlAxWinInit + classes | < 5ms | 2.1ms | COM/ATL |
+| MainWindow::Create (WM_CREATE) | < 5ms | 2.9ms | Win32 |
+| ShowWindow + UpdateWindow | — | 20.0ms | **DWM** |
+| BrowserHost::Create (MSHTML COM) | < 10ms | 40.6ms | **Trident** |
+| File I/O (532 bytes) | < 10ms | 0.1ms | Our code |
+| Markdown parsing (532 bytes) | < 10ms | 0.1ms | Our code |
+| HTML delivery (IPersistStreamInit::Load) | — | 2.6ms | Our code |
+| Trident render pipeline | < 15ms | 125.7ms | **Trident** |
+| **Total** | **50ms** | **198.8ms** | |
+
+† Not measurable from within the process; based on prior estimates.
+
+**Key insight**: The original estimates were accurate for our application code (~12ms). The three Trident/DWM stages — ShowWindow (20ms), BrowserHost::Create (41ms), and the render pipeline (126ms) — were underestimated by an order of magnitude. These are costs that any MSHTML-based app pays; they are outside our control.
 
 ### 10.2 Optimization Decisions
 
@@ -1318,7 +1340,7 @@ Result: File saved to disk, preview updated in real-time
 - Creating AtlAxWin inside WM_CREATE causes re-entrant COM dispatch (blocks rendering)
 - Deferring to wWinMain (after window is initialized) avoids re-entrancy
 - Browser creation happens asynchronously via PostMessage(WM_APP_LOADFILE)
-- First paint happens ~50–75ms after launch (acceptable UX)
+- First paint (window frame) at ~25ms; first rendered markdown at ~199ms
 
 **Why DISPID_DOCUMENTCOMPLETE Instead of WaitReady()**:
 - Synchronous message-pumping inside window creation causes re-entrancy
@@ -1333,22 +1355,18 @@ Result: File saved to disk, preview updated in real-time
 
 ### 10.3 Latency Profiling Methodology
 
-To measure actual startup time:
+**Built-in harness**: Set `#define FULL_BENCHMARK 1` in `main.cpp`, build Release, run with DebugView (SysInternals, admin, Capture Global Win32). Outputs a 16-stage timeline from `wWinMain` entry to `DocumentComplete`:
 
-```cpp
-// main.cpp (before and after key stages)
-LARGE_INTEGER freq, start, end;
-QueryPerformanceFrequency(&freq);
-
-QueryPerformanceCounter(&start);
-// ... code to measure ...
-QueryPerformanceCounter(&end);
-
-double ms = (double)(end.QuadPart - start.QuadPart) * 1000.0 / freq.QuadPart;
-OutputDebugString(L"Stage took: %f ms\n", ms);
+```
+[Bench] wWinMain entry                | + 0.001 ms | total:   0.001 ms
+[Bench] After DPI awareness           | + 0.273 ms | total:   0.274 ms
+...
+[Bench] DocumentComplete (first render)| +125.656 ms | total: 198.805 ms
 ```
 
-Better approach: use ETW (Event Tracing for Windows) or WPA (Windows Performance Analyzer) for system-level profiling, which includes OS overhead.
+The `total` column on the last line is the click-to-render cold-start latency.
+
+**ETW/WPA**: For system-level profiling including CRT init and process creation overhead (not measurable from within the process), use Event Tracing for Windows or Windows Performance Analyzer.
 
 ---
 

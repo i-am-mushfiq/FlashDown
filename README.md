@@ -1,6 +1,6 @@
 # FlashDown
 
-A native Windows Markdown viewer engineered for **sub-50ms cold-start latency**. From process creation to rendered preview: 50–75 ms on a typical SSD with a medium-sized markdown file.
+A native Windows Markdown viewer engineered for **minimal cold-start latency**. From click to rendered preview: ~199ms measured (AMD Ryzen 7, Windows 11). Our application code contributes ~12ms; the rest is Trident COM bootstrap and rendering — costs any MSHTML-based app pays. Still **3–5× faster than Electron** (500ms–1s) with **1/20th the memory** (13MB vs. 150–300MB).
 
 Single binary. No installer. No runtime dependencies. **~370 KB `.exe`** targeting Windows 7 SP1 through Windows 11.
 
@@ -20,7 +20,7 @@ Existing alternatives:
 - **Electron apps (Typora, Obsidian)**: Cold start >500ms; memory baseline 150+ MB
 - **Simple .html export**: Manual conversion step; not an app
 
-FlashDown is a native Win32 application that launches in <75ms, uses 8–12 MB resident memory, and provides a focused read→edit→save experience without external dependencies or installers.
+FlashDown is a native Win32 application that launches in ~199ms (cold), uses 8–12 MB resident memory, and provides a focused read→edit→save experience without external dependencies or installers. Its application code completes in ~12ms; the remaining time is Trident's COM initialization and rendering pipeline — unavoidable costs for any MSHTML host.
 
 ---
 
@@ -214,21 +214,26 @@ This complexity is documented in detail in `Handoff.md` (included in the repo). 
 
 ### Cold-Start Latency
 
-Measured on a 2019 Dell XPS with NVMe SSD, Windows 10, medium-complexity markdown (500 KB):
+Measured on AMD Ryzen 7, NVIDIA RTX 4070 SUPER, NVMe SSD, Windows 11, 532-byte markdown file. 16-stage `QueryPerformanceCounter` instrumentation (enable `FULL_BENCHMARK` in `main.cpp` to reproduce):
 
-| Stage | Time | Mechanism |
-|-------|------|-----------|
-| Process creation → `WinMain` | ~10 ms | CRT init, small binary, static link |
-| Window class + main window | ~5 ms | Single window, dark background |
-| COM init (`OleInitialize`) | ~5 ms | Allocate COM infrastructure |
-| Browser creation (`AtlAxWin`) | ~15 ms | WebBrowser COM object instantiation |
-| Dark blank page (`IPersistStreamInit::Load`) | ~4 ms | Trident rendering |
-| File I/O (SSD) | 5–10 ms | Synchronous `ReadFile` |
-| Markdown parsing (md4c) | 5–15 ms | Single-pass parser; depends on complexity |
-| HTML write + Trident rendering | ~3 ms | `IPersistStreamInit::Load` via IStream |
-| **Total** | **~47–67 ms** | Typical markdown file, cold SSD cache |
+| Stage | Time | Owner |
+|-------|------|-------|
+| Process startup → `wWinMain` entry | (CRT init, not measurable from within) | CRT |
+| DPI + IE registry + cmdline parse | 0.3 ms | Our code |
+| `OleInitialize` + `AtlAxWinInit` + class registration | 2.1 ms | COM / ATL |
+| `MainWindow::Create` (WM_CREATE) | 2.9 ms | Win32 |
+| `ShowWindow` + `UpdateWindow` | 20.0 ms | **DWM** |
+| `BrowserHost::Create` (MSHTML COM init) | 40.6 ms | **Trident** |
+| `LoadBlankDark` (blank page via `IPersistStreamInit::Load`) | 4.4 ms | Trident |
+| `FileIO::Read` (532 bytes) | 0.1 ms | Our code |
+| `MarkdownPipeline::Convert` (md4c) | 0.1 ms | Our code |
+| `BrowserHost::NavigateTo` (HTML via `IPersistStreamInit::Load`) | 2.6 ms | Our code |
+| Trident render pipeline (parse → layout → rasterize) | 125.7 ms | **Trident** |
+| **Total click-to-render** | **~199 ms** | |
 
-Goal: <50 ms. Achieved: 47–67 ms (within range; depends on file size and markdown complexity). The `IPersistStreamInit::Load()` path reduces the HTML delivery stage from 10–20ms to ~3ms, a 69–93% improvement over the previous SAFEARRAY + `document.write()` approach.
+Our application code accounts for ~12ms (6%). The dominant costs are Trident's COM bootstrap (41ms) and its internal render pipeline (126ms) — unavoidable for any MSHTML host. The `IPersistStreamInit::Load()` optimization (#20) keeps HTML delivery at 2.6ms where it was 37ms before.
+
+For comparison: Electron apps cold-start at 500ms–1s with 150–300MB resident. FlashDown: ~199ms, 13MB working set.
 
 ### Memory Footprint
 
@@ -255,16 +260,16 @@ For comparison:
 Markdown → HTML → Trident rendering is single-pass:
 
 ```
-UTF-8 file (100 KB)
-  ├─ md4c parsing: <2 ms (streaming callbacks)
-  ├─ HTML assembly: <1 ms (string concatenation)
-  ├─ UTF-8 → UTF-16 conversion: 1–2 ms (Windows API)
-  ├─ IPersistStreamInit::Load via IStream: ~2–3 ms (single COM call)
-  └─ Trident rendering (parse + layout + rasterize): ~3 ms
-     Total: ~9–11 ms
+UTF-8 file (532 bytes — test.md)
+  ├─ md4c parsing: <0.1 ms (streaming callbacks)
+  ├─ HTML assembly: <0.1 ms (string concatenation)
+  ├─ UTF-8 → UTF-16 conversion: <0.1 ms (Windows API)
+  ├─ IPersistStreamInit::Load via IStream: ~2.6 ms (single COM call)
+  └─ Trident rendering (parse + layout + rasterize): ~126 ms (measured)
+     Total (our code): ~3 ms — Trident adds ~126ms after delivery
 ```
 
-The `IPersistStreamInit::Load()` path eliminates the SAFEARRAY/BSTR allocation and reduces COM round-trips from ~7 to 1. Further latency reductions are possible via HTML caching and eliminating the UTF-8→UTF-16 round-trip (see Handoff.md Section 19).
+The `IPersistStreamInit::Load()` path eliminates the SAFEARRAY/BSTR allocation and reduces COM round-trips from ~7 to 1. Our application code delivers HTML in ~3ms. The remaining ~126ms is Trident's internal rendering pipeline — parsing HTML, resolving CSS, computing layout, rasterizing glyphs — which we cannot control. Further reductions in our code are possible via HTML caching and eliminating the UTF-8→UTF-16 round-trip (see Handoff.md Section 19).
 
 ---
 
@@ -630,9 +635,9 @@ MIT — see [LICENSE](LICENSE).
 
 This project demonstrates:
 
-- **Constraint-driven systems design**: Every decision is justified by the <50 ms cold-start goal
+- **Constraint-driven systems design**: Every decision is justified by cold-start latency goals
 - **Deep OS knowledge**: Win32 message loops, COM hosting, DPI awareness, ATL
-- **Tight execution**: ~3.5 KB of carefully-written C++, no fluff
+- **Measured, not estimated**: Full 16-stage QPC instrumentation replaced aspirational estimates with hard data. Application code: ~12ms. Trident: ~187ms.
 - **Honest tradeoffs**: Explicit about limitations (Trident rendering quality, single-threaded, etc.)
 - **Shipping mindset**: Binary is ~370 KB and runs on Windows 7 SP1 without an installer
 - **Diagnostic approach**: Complex bugs are understood via instrumentation (see GitHub issues for chase logs)

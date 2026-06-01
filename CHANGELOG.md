@@ -17,7 +17,31 @@ that motivated the change.
   - LoadBlankDark (blank page): 13.052ms → 4.008ms (**−69%**)
   - NavigateTo (full markdown doc): 37.467ms → 2.575ms (**−93%**)
   - Combined savings: ~44ms cold-start reduction.
-  The original path is preserved as a defensive fallback. Closes #20.
+  The original path is preserved as a defensive fallback.
+- **First measured cold-start profile** (16-stage QPC benchmark, AMD Ryzen 7,
+  RTX 4070 SUPER, Windows 11, 532-byte test.md):
+  ```
+  wWinMain entry                          +  0.0 ms  (total:   0.0)
+  DPI + IE registry + cmdline             +  0.3 ms  (total:   0.3)
+  OleInitialize                           +  1.6 ms  (total:   1.9)
+  AtlAxWinInit + class registration       +  0.5 ms  (total:   2.4)
+  MainWindow::Create (WM_CREATE)          +  2.9 ms  (total:   5.3)
+  ShowWindow + UpdateWindow               + 20.0 ms  (total:  25.2) ← DWM
+  BrowserHost::Create (MSHTML COM init)   + 40.6 ms  (total:  65.9) ← Trident
+  WM_APP_LOADFILE dispatch                +  0.1 ms  (total:  65.9)
+  LoadBlankDark (blank page)              +  4.4 ms  (total:  70.3)
+  FileIO::Read (532 bytes)                +  0.1 ms  (total:  70.5)
+  MarkdownPipeline::Convert (md4c)        +  0.1 ms  (total:  70.5)
+  BrowserHost::NavigateTo (Load)          +  2.6 ms  (total:  73.1)
+  DocumentComplete (Trident render)       +125.7 ms  (total: 198.8) ← 63% of total
+  ```
+  Our code accounts for ~12ms (6%). The remaining ~187ms is Trident COM
+  init (41ms), DWM window animation (20ms), and Trident's internal
+  parse+layout+rasterize pipeline (126ms). The `IPersistStreamInit`
+  optimization works as designed — HTML delivery is 2.6ms where it was
+  37ms before. Cold-start: **198.8ms measured** (vs. previous 47–67ms
+  estimate). Still 3–5× faster than Electron (500ms–1s) with 13MB
+  working set vs. 150–300MB. Closes #20.
 
 ### Fixed (scroll-redo branch)
 - Wheel scrolling and scrollbar visibility (#13, #14, #17). Three coordinated
