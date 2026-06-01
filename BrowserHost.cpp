@@ -421,32 +421,11 @@ static void DisconnectSink()
 // ---------------------------------------------------------------------------
 // Public interface
 // ---------------------------------------------------------------------------
-
-// Dark page used as the initial navigation — eliminates the separate
-// about:blank render cycle. This is the first thing Trident renders.
-// Format: data URI (RFC 2397). Trident (IE8+) supports data: URIs.
-// #191919 is %23191919 in the URI (the fragment sigil must be escaped).
-static const wchar_t kInitialPage[] =
-    L"data:text/html,<!DOCTYPE html>"
-    L"<html><head>"
-    L"<meta charset='UTF-8'>"
-    L"<meta http-equiv='X-UA-Compatible' content='IE=edge'>"
-    L"</head>"
-    L"<body style='background:%23191919;margin:0'></body></html>";
-
 HWND BrowserHost::Create(HWND hParent, HINSTANCE hInst, RECT rect)
 {
-    // R02: disable LMZ lockdown so remote <img> loads without prompts.
-    // Must happen before any navigation, hence before CreateWindowW.
-    CoInternetSetFeatureEnabled(FEATURE_LOCALMACHINE_LOCKDOWN,
-                                SET_FEATURE_ON_PROCESS, FALSE);
-
-    // Navigate directly to the dark page as the initial URL.
-    // This eliminates the about:blank render cycle — the browser's first
-    // paint is already dark. No separate LoadBlankDark() call needed.
     s_hWnd = CreateWindowW(
         _T(ATLAXWIN_CLASS),
-        kInitialPage,
+        L"about:blank",
         WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN,
         rect.left, rect.top,
         rect.right  - rect.left,
@@ -469,12 +448,13 @@ HWND BrowserHost::Create(HWND hParent, HINSTANCE hInst, RECT rect)
 
 void BrowserHost::LoadBlankDark()
 {
-    // Dark page is now delivered as the initial navigation (data URI in
-    // CreateWindowW). If the document isn't ready yet for some reason,
-    // store as pending so the DocumentComplete sink retries.
-    //
-    // R02 (LMZ lockdown) moved to BrowserHost::Create — must happen before
-    // the first navigation, and CreateWindowW now navigates immediately.
+    // R02: disable LMZ lockdown so remote <img> loads without prompts.
+    CoInternetSetFeatureEnabled(FEATURE_LOCALMACHINE_LOCKDOWN,
+                                SET_FEATURE_ON_PROCESS, FALSE);
+
+    // Try to write the blank dark page immediately.
+    // If the document isn't ready (about:blank still loading), store as
+    // pending so the sink delivers it on DocumentComplete.
     static const wchar_t kBlank[] =
         L"<!DOCTYPE html><html><head>"
         L"<meta charset=\"UTF-8\">"
