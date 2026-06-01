@@ -94,7 +94,6 @@ File System → FileIO::Read (UTF-8)
          Win32 window (GDI back buffer)
 ```
 
-[ARCHITECTURE_DIAGRAM_PLACEHOLDER]
 
 ### Runtime Message Flow
 
