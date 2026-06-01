@@ -2,11 +2,15 @@
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
   <assemblyIdentity version="1.0.0.0" name="FlashDown" type="win32"/>
 
-  <!-- Per-monitor v2 DPI awareness: text and Trident render at native resolution -->
+  <!-- System DPI awareness (#15): Trident pre-dates per-monitor DPI and renders
+       text with subpixel jitter under PerMonitorV2 because layout is computed in
+       DIPs but rasterisation happens at the primary monitor's pixel grid, then
+       bitmap-rescaled. Using single-DPI System awareness keeps the rasterisation
+       grid stable for the process lifetime. -->
   <application xmlns="urn:schemas-microsoft-com:asm.v3">
     <windowsSettings>
-      <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true/pm</dpiAware>
-      <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2</dpiAwareness>
+      <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true</dpiAware>
+      <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">system</dpiAwareness>
     </windowsSettings>
   </application>
 

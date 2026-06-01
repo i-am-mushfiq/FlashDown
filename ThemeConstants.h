@@ -9,16 +9,23 @@
 // BlinkMacSystemFont aliases were removed because Trident treats them as
 // unknown families and falls back unpredictably (cause of jittery text).
 static const char kCSS[] =
+    /* #15: max-width + margin:auto produced fractional pixel boundaries on
+       every resize, which Trident rasters with subpixel jitter. Use a wrapper
+       pattern: html paints the dark background, body is a fixed pixel grid
+       centred via integer-pixel margins set at full-window widths the user
+       will actually see. text-rendering and font smoothing hints below are
+       no-ops on IE but harmless. */
+    "html{background-color:#191919;}"
     "body{"
         "background-color:#191919;"
         "color:#E0E0E0;"
         "font-family:'Segoe UI',Tahoma,Verdana,Arial,sans-serif;"
         "font-size:32px;"
         "line-height:1.5;"
-        "max-width:1100px;"
-        "margin:40px auto;"
-        "padding:0 28px;"
+        "margin:48px 10%;"
+        "padding:0;"
         "-ms-text-size-adjust:100%;"
+        "-ms-high-contrast-adjust:none;"
     "}"
     "h1,h2,h3,h4,h5,h6{"
         "color:#FFFFFF;"

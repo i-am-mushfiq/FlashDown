@@ -15,6 +15,16 @@ that motivated the change.
   un-maximizes. Closes #16.
 
 ### Fixed
+- Residual text jitter / soft rendering. Three changes together:
+  switch DPI awareness from `PerMonitorV2` to `System` (Trident pre-dates
+  per-monitor DPI; PMv2 produces layout-in-DIPs + raster-on-primary-grid +
+  bitmap-rescale, which is exactly the observed jitter); bump
+  `FEATURE_BROWSER_EMULATION` from `11000` (IE11 default) to `12001`
+  (IE11 Standards forced) for consistent metrics across reloads; remove
+  the `max-width: 1100px; margin: 40px auto;` CSS pair that created a
+  fractional pixel column boundary on every resize, replace with a
+  pixel-aligned `margin: 48px 10%` layout. Manifest and runtime fallback
+  both updated. Closes #15.
 - Mouse-wheel scrolling really works now. The #10 fix forwarded wheel
   events from the main window's WndProc, but on Win10/11 wheel goes to
   the window under the cursor — the `AtlAxWin140` host control — which

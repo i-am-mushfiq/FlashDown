@@ -58,30 +58,32 @@ static std::wstring ParseFilePath(LPWSTR lpCmdLine)
 // ---------------------------------------------------------------------------
 int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR lpCmdLine, int)
 {
-    // DPI awareness — runtime call as a belt-and-braces with the manifest.
-    // SetProcessDpiAwarenessContext is Win10 1703+; fall back to per-monitor
-    // v1 (Win8.1+) and finally system-DPI-aware (Vista+).
-    typedef BOOL  (WINAPI *PFN_SetCtx)(DPI_AWARENESS_CONTEXT);
-    typedef HRESULT (WINAPI *PFN_SetPMD)(int);
-    HMODULE hU32 = GetModuleHandleW(L"user32.dll");
-    if (hU32)
+    // DPI awareness (#15) — System-DPI-aware, matching the manifest.
+    // Trident jitter under PerMonitorV2 is caused by layout-in-DIPs +
+    // raster-on-primary-grid + bitmap-rescale; pinning to a single DPI
+    // for the process lifetime stabilises text metrics.
+    // Win8.1+ has SetProcessDpiAwareness; older systems fall back silently.
+    typedef HRESULT (WINAPI *PFN_SetPDA)(int /*PROCESS_DPI_AWARENESS*/);
+    if (HMODULE hShc = LoadLibraryW(L"Shcore.dll"))
     {
-        if (PFN_SetCtx fn = reinterpret_cast<PFN_SetCtx>(
-                GetProcAddress(hU32, "SetProcessDpiAwarenessContext")))
-            fn(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+        if (auto fn = reinterpret_cast<PFN_SetPDA>(
+                GetProcAddress(hShc, "SetProcessDpiAwareness")))
+            fn(1 /*PROCESS_SYSTEM_DPI_AWARE*/);
     }
 
-    // Trigger IE9+ rendering mode for the hosted Trident control.
-    // FlashDown.exe key under FEATURE_BROWSER_EMULATION = 11000 (IE11 mode).
+    // Force IE11 Standards mode for the embedded Trident control (#15).
+    // 12001 = "always IE11 Standards regardless of doctype" — more
+    // stable than 11000 (which honours the page doctype and can fall
+    // through to a quirks-mode raster path on edge-case markup).
     {
         HKEY hKey;
         if (RegCreateKeyExW(HKEY_CURRENT_USER,
             L"Software\\Microsoft\\Internet Explorer\\Main\\FeatureControl\\FEATURE_BROWSER_EMULATION",
             0, nullptr, 0, KEY_SET_VALUE, nullptr, &hKey, nullptr) == ERROR_SUCCESS)
         {
-            DWORD ie11 = 11000;
+            DWORD ie11Std = 12001;
             RegSetValueExW(hKey, L"FlashDown.exe", 0, REG_DWORD,
-                           reinterpret_cast<const BYTE*>(&ie11), sizeof(ie11));
+                           reinterpret_cast<const BYTE*>(&ie11Std), sizeof(ie11Std));
             RegCloseKey(hKey);
         }
     }
