@@ -19,6 +19,7 @@
 #include <exdisp.h>
 #include <exdispid.h>
 #include <mshtml.h>
+#include <mshtmhst.h>      // IDocHostUIHandler (#17)
 #include <urlmon.h>
 
 #include <new>
@@ -43,6 +44,7 @@ static std::wstring  s_pendingHTML;
 
 // Forward declarations
 static HWND FindIEServerRecursive(HWND hParent);
+static void InstallUIHandler();
 
 // ---------------------------------------------------------------------------
 // Write html into the live document via IHTMLDocument2::write().
@@ -150,9 +152,12 @@ public:
                 html.swap(s_pendingHTML);
                 WriteHTML(html);
             }
+            // Install IDocHostUIHandler on the new document (#17).
+            // Without it, Trident suppresses scrollbars and doesn't route
+            // wheel / keyboard input to its scroll machinery.
+            InstallUIHandler();
             // Push focus into the IE Server so wheel / arrow / PgDn
-            // are routed there by the OS. Without this the parent
-            // FlashDown_Main keeps focus and the document is unscrollable.
+            // are routed there by the OS.
             BrowserHost::FocusBrowser();
         }
         return S_OK;
@@ -160,6 +165,127 @@ public:
 };
 
 static CNavSink* s_pSink = nullptr;
+
+// ---------------------------------------------------------------------------
+// CUIHandler — IDocHostUIHandler implementation (#17).
+//
+// Trident hosted inside AtlAxWin without an IDocHostUIHandler ambient site
+// runs in a degraded mode: scrollbars are suppressed and wheel / keyboard
+// input is not routed to the scroll dispatcher, even when the layout
+// reports the document as scrollable. Confirmed via diagnostic build:
+//   - documentElement.scrollHeight (8109) > clientHeight (1991), so
+//     Trident knows the doc overflows.
+//   - IHTMLElement2::put_scrollTop() works programmatically.
+//   - WM_MOUSEWHEEL and WM_KEYDOWN delivered straight to the
+//     Internet Explorer_Server window produce no scroll.
+//
+// Installing this handler via ICustomDoc::SetUIHandler after every
+// document load re-enables the normal hosted-Trident input behaviour.
+//
+// Most methods return E_NOTIMPL — Trident treats that as "host has no
+// opinion, use defaults." GetHostInfo returns minimal flags so we don't
+// suppress anything we want. ShowContextMenu returns S_OK to suppress
+// the default IE right-click menu (FlashDown is a viewer, not a browser).
+// TranslateAccelerator returns S_FALSE so Trident processes its own keys.
+// ---------------------------------------------------------------------------
+class CUIHandler : public IDocHostUIHandler
+{
+    ULONG m_refs = 1;
+public:
+    STDMETHODIMP QueryInterface(REFIID riid, void** ppv) override
+    {
+        if (riid == IID_IUnknown || riid == IID_IDocHostUIHandler)
+        {
+            *ppv = static_cast<IDocHostUIHandler*>(this);
+            AddRef();
+            return S_OK;
+        }
+        *ppv = nullptr;
+        return E_NOINTERFACE;
+    }
+    STDMETHODIMP_(ULONG) AddRef()  override { return ++m_refs; }
+    STDMETHODIMP_(ULONG) Release() override
+    {
+        ULONG r = --m_refs;
+        if (!r) delete this;
+        return r;
+    }
+
+    STDMETHODIMP ShowContextMenu(DWORD, POINT*, IUnknown*, IDispatch*) override
+    {
+        return S_OK; // suppress IE context menu
+    }
+
+    STDMETHODIMP GetHostInfo(DOCHOSTUIINFO* pInfo) override
+    {
+        if (!pInfo) return E_POINTER;
+        pInfo->cbSize = sizeof(DOCHOSTUIINFO);
+        // No suppression flags — we want scrollbars and default behaviour.
+        // DOCHOSTUIFLAG_THEME picks up the visual style.
+        pInfo->dwFlags = DOCHOSTUIFLAG_NO3DBORDER | DOCHOSTUIFLAG_THEME;
+        pInfo->dwDoubleClick = DOCHOSTUIDBLCLK_DEFAULT;
+        pInfo->pchHostCss = nullptr;
+        pInfo->pchHostNS  = nullptr;
+        return S_OK;
+    }
+
+    STDMETHODIMP ShowUI(DWORD, IOleInPlaceActiveObject*, IOleCommandTarget*,
+                        IOleInPlaceFrame*, IOleInPlaceUIWindow*) override
+    { return S_FALSE; }
+    STDMETHODIMP HideUI() override                            { return S_OK; }
+    STDMETHODIMP UpdateUI() override                          { return S_OK; }
+    STDMETHODIMP EnableModeless(BOOL) override                { return E_NOTIMPL; }
+    STDMETHODIMP OnDocWindowActivate(BOOL) override           { return E_NOTIMPL; }
+    STDMETHODIMP OnFrameWindowActivate(BOOL) override         { return E_NOTIMPL; }
+    STDMETHODIMP ResizeBorder(LPCRECT, IOleInPlaceUIWindow*, BOOL) override
+    { return E_NOTIMPL; }
+
+    STDMETHODIMP TranslateAccelerator(LPMSG, const GUID*, DWORD) override
+    {
+        // S_FALSE = "I didn't translate, let Trident handle it" — which is
+        // what enables built-in keyboard scrolling (arrows, PgDn, Home, End).
+        return S_FALSE;
+    }
+
+    STDMETHODIMP GetOptionKeyPath(LPOLESTR*, DWORD) override  { return E_NOTIMPL; }
+    STDMETHODIMP GetDropTarget(IDropTarget*, IDropTarget**) override
+    { return E_NOTIMPL; }
+    STDMETHODIMP GetExternal(IDispatch** ppDisp) override
+    {
+        if (ppDisp) *ppDisp = nullptr;
+        return E_NOTIMPL;
+    }
+    STDMETHODIMP TranslateUrl(DWORD, LPWSTR, LPWSTR*) override { return E_NOTIMPL; }
+    STDMETHODIMP FilterDataObject(IDataObject*, IDataObject** ppDO) override
+    {
+        if (ppDO) *ppDO = nullptr;
+        return E_NOTIMPL;
+    }
+};
+
+static CUIHandler* s_pUIHandler = nullptr;
+
+// Install our IDocHostUIHandler on the live document via ICustomDoc.
+// Must be called every time a new document is loaded (each navigation /
+// document.write produces a fresh IHTMLDocument and the binding is lost).
+static void InstallUIHandler()
+{
+    if (!s_pBrowser) return;
+    if (!s_pUIHandler) s_pUIHandler = new(std::nothrow) CUIHandler();
+    if (!s_pUIHandler) return;
+
+    IDispatch* pDisp = nullptr;
+    if (FAILED(s_pBrowser->get_Document(&pDisp)) || !pDisp) return;
+
+    ICustomDoc* pCustomDoc = nullptr;
+    if (SUCCEEDED(pDisp->QueryInterface(IID_ICustomDoc,
+                                         reinterpret_cast<void**>(&pCustomDoc))) && pCustomDoc)
+    {
+        pCustomDoc->SetUIHandler(s_pUIHandler);
+        pCustomDoc->Release();
+    }
+    pDisp->Release();
+}
 
 static void ConnectSink()
 {
@@ -308,7 +434,8 @@ void BrowserHost::FocusBrowser()
 void BrowserHost::Release()
 {
     DisconnectSink();
-    if (s_pSink)    { s_pSink->Release();    s_pSink    = nullptr; }
-    if (s_pBrowser) { s_pBrowser->Release(); s_pBrowser = nullptr; }
+    if (s_pSink)      { s_pSink->Release();      s_pSink      = nullptr; }
+    if (s_pUIHandler) { s_pUIHandler->Release(); s_pUIHandler = nullptr; }
+    if (s_pBrowser)   { s_pBrowser->Release();   s_pBrowser   = nullptr; }
     s_hWnd = nullptr;
 }

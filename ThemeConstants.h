@@ -15,7 +15,12 @@ static const char kCSS[] =
        centred via integer-pixel margins set at full-window widths the user
        will actually see. text-rendering and font smoothing hints below are
        no-ops on IE but harmless. */
-    "html{background-color:#191919;}"
+    /* #17: explicit height + overflow on html. Trident in this hosting
+       config defaults to a degraded mode where scrollbars are suppressed
+       and wheel/keys aren't routed to scroll, even though docEl.scrollHeight
+       reports overflow. Setting these on html unambiguously puts the
+       viewport into a scrollable state Trident's input pipeline responds to. */
+    "html{background-color:#191919;height:100%;overflow-y:auto;overflow-x:hidden;}"
     "body{"
         "background-color:#191919;"
         "color:#E0E0E0;"

@@ -10,14 +10,35 @@ that motivated the change.
 ## [Unreleased]
 
 ### Fixed (scroll-redo branch)
-- Focus management for the embedded Trident control. With the WH_GETMESSAGE
-  hook from #12 reverted, scrolling required the IE Server to have keyboard
-  focus. Added `WM_SETFOCUS` and `WM_ACTIVATE` handlers in `MainWindow` that
-  forward focus to the IE Server (unless Edit mode is active), plus a
-  `SetFocus(IE Server)` call on `DISPID_DOCUMENTCOMPLETE` so the first
-  scroll after load works. Diagnostic build confirmed the OS sees the
-  cursor over `Internet Explorer_Server` and a `GetGUIThreadInfo` probe
-  confirmed the IE Server holds focus after the fix. Refs #13.
+- Wheel scrolling and scrollbar visibility (#13, #14, #17). Three coordinated
+  changes after a diagnostic-driven investigation:
+  - **CSS** (`ThemeConstants.h`): set `html { height:100%; overflow-y:auto;
+    overflow-x:hidden }`. Without this, Trident in our hosting config runs
+    in a degraded mode — `documentElement.scrollHeight` reports the doc as
+    scrollable, but scrollbars are suppressed and wheel/keyboard input is
+    not routed to the scroll dispatcher. Explicit overflow on the html
+    element puts the viewport into an unambiguously scrollable state that
+    Trident's input pipeline responds to.
+  - **Focus management** (`MainWindow.cpp`, `BrowserHost.cpp`):
+    `WM_SETFOCUS` / `WM_ACTIVATE` forward focus to the `Internet Explorer_Server`
+    HWND (unless Edit mode is active), and `DISPID_DOCUMENTCOMPLETE` calls
+    `SetFocus(IE Server)` so the first scroll after load works. Required
+    because `SPI_GETMOUSEWHEELROUTING` is `2` (mouse-focus) and without the
+    IE Server holding focus, the OS doesn't deliver wheel to it.
+  - **`IDocHostUIHandler`** (`BrowserHost.cpp`): minimal 14-method ambient
+    site installed on each new document via `ICustomDoc::SetUIHandler`.
+    Most methods return `E_NOTIMPL`; the meaningful ones are `GetHostInfo`
+    (no suppression flags), `TranslateAccelerator` (`S_FALSE` so Trident
+    processes its own keys), and `ShowContextMenu` (`S_OK` to suppress
+    the IE right-click menu). Defensive — proper hosting practice and
+    avoids future degraded-mode surprises.
+  - **Reverted attempts** retained for revision history: the WH_GETMESSAGE
+    hook from #12 (crashed on wheel) and the WM_MOUSEWHEEL forwarder from
+    #10 (didn't reach the cursor-window). Lesson: cross-process synthetic
+    input tests on Win10+ produce false-negatives. The next time tests
+    disagree with manual observation, manual observation wins.
+
+  Closes #13, #14, #17.
 
 ### Changed
 - Window opens **maximized** by default instead of the PRD's 900x700.
