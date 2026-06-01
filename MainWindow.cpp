@@ -84,9 +84,12 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
     {
         BenchCheckpoint(L"WM_APP_LOADFILE start");
 
-        // Set up the dark blank page (async via event sink if doc not ready).
-        BrowserHost::LoadBlankDark();
-        BenchCheckpoint(L"After LoadBlankDark");
+        // Dark page is now the initial navigation (data URI in
+        // BrowserHost::Create). No separate LoadBlankDark() needed —
+        // the browser's first paint is already #191919.
+        // If the data URI hasn't completed yet, NavigateTo's pending-
+        // HTML fallback will handle it.
+        BenchCheckpoint(L"After dark page init (via data URI)");
 
         if (g_strFilePath.empty()) return 0;
 
