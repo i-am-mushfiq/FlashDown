@@ -2202,6 +2202,7 @@ Key commits (referenced in CHANGELOG.md):
 | `ca7f506` | #16 | Open maximized by default |
 | `62b88b3` | #13, #14, #17 | Wheel scroll works (CSS overflow + IDocHostUIHandler) |
 | `c1695b3` | #18 | Replace placeholder icon |
+| `7d38ca1` | #20 | IPersistStreamInit::Load() replaces SAFEARRAY + document.write() (69–93% faster HTML delivery) |
 
 ---
 
