@@ -22,6 +22,9 @@ std::wstring  g_strFilePath;
 std::string   g_strMarkdown;
 HWND          g_hToolbar = nullptr;
 
+// Cold-start benchmark checkpoint (defined in main.cpp, no-op when disabled)
+extern void BenchCheckpoint(const wchar_t* name);
+
 static HINSTANCE s_hInst = nullptr;
 static HBRUSH    s_hbrBg = nullptr;  // main window background
 
@@ -79,8 +82,11 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
     // ------------------------------------------------------------------
     case WM_APP_LOADFILE:
     {
+        BenchCheckpoint(L"WM_APP_LOADFILE start");
+
         // Set up the dark blank page (async via event sink if doc not ready).
         BrowserHost::LoadBlankDark();
+        BenchCheckpoint(L"After LoadBlankDark");
 
         if (g_strFilePath.empty()) return 0;
 
@@ -92,10 +98,14 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         }
         g_strMarkdown = content;
         UpdateTitle(hwnd);
+        BenchCheckpoint(L"After FileIO::Read");
 
         std::wstring html = MarkdownPipeline::Convert(g_strMarkdown);
+        BenchCheckpoint(L"After MarkdownPipeline::Convert");
+
         if (!html.empty())
             BrowserHost::NavigateTo(html);
+        BenchCheckpoint(L"After BrowserHost::NavigateTo (HTML delivered)");
 
         return 0;
     }

@@ -59,6 +59,9 @@
 #pragma comment(lib, "uuid.lib")
 #pragma comment(lib, "urlmon.lib")
 
+// Cold-start benchmark checkpoint (defined in main.cpp, no-op when disabled)
+extern void BenchCheckpoint(const wchar_t* name);
+
 // ---------------------------------------------------------------------------
 // Module state
 // ---------------------------------------------------------------------------
@@ -234,6 +237,8 @@ public:
         }
         else if (id == DISPID_DOCUMENTCOMPLETE)
         {
+            BenchCheckpoint(L"DocumentComplete (first render)");
+
             // Deliver any pending HTML now that the document is ready
             if (!s_pendingHTML.empty())
             {

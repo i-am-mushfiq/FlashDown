@@ -30,6 +30,46 @@ extern std::wstring g_strFilePath;
 #pragma comment(lib, "uuid.lib")
 
 // ---------------------------------------------------------------------------
+// Full cold-start benchmark — set to 1 to trace every stage from wWinMain
+// entry to first rendered frame.  Output lands in DebugView (SysInternals).
+//   [Bench] Stage name                      | +delta ms | total:  X.XXX ms
+// When set to 0 the instrumentation compiles to zero code.
+// ---------------------------------------------------------------------------
+#define FULL_BENCHMARK 0
+#if FULL_BENCHMARK
+#include <stdio.h>
+static LARGE_INTEGER g_benchFreq, g_benchT0, g_benchPrev;
+#endif
+
+void BenchCheckpoint(const wchar_t* name)
+{
+#if FULL_BENCHMARK
+    LARGE_INTEGER now;
+    QueryPerformanceCounter(&now);
+    double total = (double)(now.QuadPart - g_benchT0.QuadPart)
+                 * 1000.0 / (double)g_benchFreq.QuadPart;
+    double delta = (double)(now.QuadPart - g_benchPrev.QuadPart)
+                 * 1000.0 / (double)g_benchFreq.QuadPart;
+    wchar_t buf[256];
+    swprintf_s(buf, L"[Bench] %-40s | +%7.3f ms | total: %7.3f ms",
+               name, delta, total);
+    OutputDebugStringW(buf);
+    g_benchPrev = now;
+#endif
+}
+
+#if FULL_BENCHMARK
+#define BENCH_INIT() do { \
+    QueryPerformanceFrequency(&g_benchFreq); \
+    QueryPerformanceCounter(&g_benchT0); \
+    g_benchPrev = g_benchT0; \
+    BenchCheckpoint(L"wWinMain entry"); \
+} while(0)
+#else
+#define BENCH_INIT() ((void)0)
+#endif
+
+// ---------------------------------------------------------------------------
 // Parse the first argument from the command line (handles quoted paths)
 // ---------------------------------------------------------------------------
 static std::wstring ParseFilePath(LPWSTR lpCmdLine)
@@ -58,6 +98,8 @@ static std::wstring ParseFilePath(LPWSTR lpCmdLine)
 // ---------------------------------------------------------------------------
 int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR lpCmdLine, int)
 {
+    BENCH_INIT();
+
     // DPI awareness (#15) — System-DPI-aware, matching the manifest.
     // Trident jitter under PerMonitorV2 is caused by layout-in-DIPs +
     // raster-on-primary-grid + bitmap-rescale; pinning to a single DPI
@@ -70,6 +112,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR lpCmdLine, int)
                 GetProcAddress(hShc, "SetProcessDpiAwareness")))
             fn(1 /*PROCESS_SYSTEM_DPI_AWARE*/);
     }
+    BenchCheckpoint(L"After DPI awareness");
 
     // Force IE11 Standards mode for the embedded Trident control (#15).
     // 12001 = "always IE11 Standards regardless of doctype" — more
@@ -89,26 +132,32 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR lpCmdLine, int)
     }
 
     g_strFilePath = ParseFilePath(lpCmdLine);
+    BenchCheckpoint(L"After IE emulation + cmdline parse");
 
     // OLE must be initialised before AtlAxWin creates the WebBrowser ActiveX
     // control (CoCreateInstance requires a COM apartment).
     OleInitialize(nullptr);
+    BenchCheckpoint(L"After OleInitialize");
 
     // Register the AtlAxWin window class (houses the WebBrowser control)
     AtlAxWinInit();
+    BenchCheckpoint(L"After AtlAxWinInit");
 
     if (!MainWindow::RegisterClass(hInst))    return 1;
     if (!ToolbarWindow::RegisterClass(hInst)) return 1;
     if (!SplitterWindow::RegisterClass(hInst)) return 1;
+    BenchCheckpoint(L"After window class registration");
 
     HWND hwnd = MainWindow::Create(hInst);
     if (!hwnd) return 1;
+    BenchCheckpoint(L"After MainWindow::Create (WM_CREATE done)");
 
     // Open maximized so the preview fills the screen on launch (#16).
     // The restore state still respects the 900x700 / 400x300 min from
     // FR6, so users who un-maximize fall back to a sensible window.
     ShowWindow(hwnd, SW_SHOWMAXIMIZED);
     UpdateWindow(hwnd);
+    BenchCheckpoint(L"After ShowWindow + UpdateWindow");
 
     // Create the browser control HERE — in wWinMain, not inside any window
     // message handler. Creating AtlAxWin inside DispatchMessage causes COM's
@@ -120,6 +169,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR lpCmdLine, int)
         BrowserHost::Create(hwnd, hInst, browserRc);
         // LoadBlankDark is called from WM_APP_LOADFILE in the message loop.
     }
+    BenchCheckpoint(L"After BrowserHost::Create + PostMessage");
 
     MSG msg;
     while (GetMessageW(&msg, nullptr, 0, 0) > 0)
