@@ -4,7 +4,9 @@ A native Windows Markdown viewer engineered for **sub-50ms cold-start latency**.
 
 Single binary. No installer. No runtime dependencies. **~370 KB `.exe`** targeting Windows 7 SP1 through Windows 11.
 
-<img width="559" height="559" alt="image" src="https://github.com/user-attachments/assets/f8f15135-eab5-43c1-ba3d-94d0ce7b79d1" />
+<div align="center">
+  <img width="200" height="200" alt="image" src="https://github.com/user-attachments/assets/f8f15135-eab5-43c1-ba3d-94d0ce7b79d1" />
+</div>
 
 
 ---
