@@ -141,12 +141,19 @@ public:
                     *pCancel->pboolVal = VARIANT_TRUE;
             }
         }
-        else if (id == DISPID_DOCUMENTCOMPLETE && !s_pendingHTML.empty())
+        else if (id == DISPID_DOCUMENTCOMPLETE)
         {
             // Deliver any pending HTML now that the document is ready
-            std::wstring html;
-            html.swap(s_pendingHTML);
-            WriteHTML(html);
+            if (!s_pendingHTML.empty())
+            {
+                std::wstring html;
+                html.swap(s_pendingHTML);
+                WriteHTML(html);
+            }
+            // Push focus into the IE Server so wheel / arrow / PgDn
+            // are routed there by the OS. Without this the parent
+            // FlashDown_Main keeps focus and the document is unscrollable.
+            BrowserHost::FocusBrowser();
         }
         return S_OK;
     }

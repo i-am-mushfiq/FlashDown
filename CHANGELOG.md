@@ -9,6 +9,16 @@ that motivated the change.
 
 ## [Unreleased]
 
+### Fixed (scroll-redo branch)
+- Focus management for the embedded Trident control. With the WH_GETMESSAGE
+  hook from #12 reverted, scrolling required the IE Server to have keyboard
+  focus. Added `WM_SETFOCUS` and `WM_ACTIVATE` handlers in `MainWindow` that
+  forward focus to the IE Server (unless Edit mode is active), plus a
+  `SetFocus(IE Server)` call on `DISPID_DOCUMENTCOMPLETE` so the first
+  scroll after load works. Diagnostic build confirmed the OS sees the
+  cursor over `Internet Explorer_Server` and a `GetGUIThreadInfo` probe
+  confirmed the IE Server holds focus after the fix. Refs #13.
+
 ### Changed
 - Window opens **maximized** by default instead of the PRD's 900x700.
   The restore size and the 400x300 minimum still apply when the user
