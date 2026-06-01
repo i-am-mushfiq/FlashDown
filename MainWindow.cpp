@@ -187,29 +187,6 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         return 0;
 
     // ------------------------------------------------------------------
-    // Forward mouse wheel to the IE document so the user can scroll
-    // when focus is on the parent (toolbar, splitter, etc.).
-    case WM_MOUSEWHEEL:
-    {
-        HWND srv = BrowserHost::FindServerHWND();
-        if (srv) return SendMessageW(srv, msg, wParam, lParam);
-        break;
-    }
-
-    // ------------------------------------------------------------------
-    // When activated or focused, push focus to the browser (unless we're
-    // in edit mode and the editor should keep focus).
-    case WM_SETFOCUS:
-        if (!EditModeController::IsActive())
-            BrowserHost::FocusBrowser();
-        return 0;
-
-    case WM_ACTIVATE:
-        if (LOWORD(wParam) != WA_INACTIVE && !EditModeController::IsActive())
-            BrowserHost::FocusBrowser();
-        break;
-
-    // ------------------------------------------------------------------
     case WM_ERASEBKGND:
     {
         RECT rc; GetClientRect(hwnd, &rc);

@@ -37,7 +37,6 @@
 static HWND          s_hWnd        = nullptr;
 static IWebBrowser2* s_pBrowser    = nullptr;
 static DWORD         s_cookie      = 0;
-static HHOOK         s_msgHook     = nullptr;   // thread-local WH_GETMESSAGE
 
 // Pending HTML to load on next DocumentComplete
 static std::wstring  s_pendingHTML;
@@ -142,18 +141,12 @@ public:
                     *pCancel->pboolVal = VARIANT_TRUE;
             }
         }
-        else if (id == DISPID_DOCUMENTCOMPLETE)
+        else if (id == DISPID_DOCUMENTCOMPLETE && !s_pendingHTML.empty())
         {
             // Deliver any pending HTML now that the document is ready
-            if (!s_pendingHTML.empty())
-            {
-                std::wstring html;
-                html.swap(s_pendingHTML);
-                WriteHTML(html);
-            }
-            // Give keyboard focus to the IE document so wheel & arrow keys
-            // scroll the content instead of being eaten by the parent window.
-            BrowserHost::FocusBrowser();
+            std::wstring html;
+            html.swap(s_pendingHTML);
+            WriteHTML(html);
         }
         return S_OK;
     }
@@ -198,41 +191,6 @@ static void DisconnectSink()
 }
 
 // ---------------------------------------------------------------------------
-// Thread-local WH_GETMESSAGE hook (#12). Catches WM_MOUSEWHEEL /
-// WM_MOUSEHWHEEL before they reach any WndProc and rewrites the target
-// HWND to the inner Internet Explorer_Server when the cursor is over
-// the AtlAxWin host (which doesn't bubble wheel events down by itself).
-//
-// We don't subclass the AtlAxWin window because ATL's hosting machinery
-// stores per-window thunks that don't tolerate GWLP_WNDPROC replacement.
-// A thread-local hook is non-invasive and doesn't require touching the
-// host's window state.
-// ---------------------------------------------------------------------------
-static LRESULT CALLBACK MsgHookProc(int code, WPARAM wParam, LPARAM lParam)
-{
-    if (code == HC_ACTION && lParam)
-    {
-        MSG* msg = reinterpret_cast<MSG*>(lParam);
-        if ((msg->message == WM_MOUSEWHEEL || msg->message == WM_MOUSEHWHEEL)
-            && s_hWnd)
-        {
-            // If the destination HWND is the AtlAxWin host (or any descendant
-            // that isn't the IE Server itself), redirect to the IE Server.
-            HWND target = msg->hwnd;
-            if (target == s_hWnd || IsChild(s_hWnd, target))
-            {
-                if (HWND srv = FindIEServerRecursive(s_hWnd))
-                {
-                    if (target != srv)
-                        msg->hwnd = srv;
-                }
-            }
-        }
-    }
-    return CallNextHookEx(s_msgHook, code, wParam, lParam);
-}
-
-// ---------------------------------------------------------------------------
 // Public interface
 // ---------------------------------------------------------------------------
 HWND BrowserHost::Create(HWND hParent, HINSTANCE hInst, RECT rect)
@@ -247,14 +205,6 @@ HWND BrowserHost::Create(HWND hParent, HINSTANCE hInst, RECT rect)
         hParent, nullptr, hInst, nullptr
     );
     if (!s_hWnd) return nullptr;
-
-    // Install thread-local WH_GETMESSAGE hook to redirect wheel events
-    // to the inner IE server window (see MsgHookProc).
-    if (!s_msgHook)
-    {
-        s_msgHook = SetWindowsHookExW(WH_GETMESSAGE, MsgHookProc,
-                                       nullptr, GetCurrentThreadId());
-    }
 
     IUnknown* pUnk = nullptr;
     if (SUCCEEDED(AtlAxGetControl(s_hWnd, &pUnk)) && pUnk)
@@ -350,7 +300,6 @@ void BrowserHost::FocusBrowser()
 
 void BrowserHost::Release()
 {
-    if (s_msgHook) { UnhookWindowsHookEx(s_msgHook); s_msgHook = nullptr; }
     DisconnectSink();
     if (s_pSink)    { s_pSink->Release();    s_pSink    = nullptr; }
     if (s_pBrowser) { s_pBrowser->Release(); s_pBrowser = nullptr; }
