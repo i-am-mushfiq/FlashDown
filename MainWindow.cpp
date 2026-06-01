@@ -187,18 +187,12 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         return 0;
 
     // ------------------------------------------------------------------
-    // Forward mouse wheel to the IE document so the user can scroll
-    // when focus is on the parent (toolbar, splitter, etc.).
-    case WM_MOUSEWHEEL:
-    {
-        HWND srv = BrowserHost::FindServerHWND();
-        if (srv) return SendMessageW(srv, msg, wParam, lParam);
-        break;
-    }
-
-    // ------------------------------------------------------------------
-    // When activated or focused, push focus to the browser (unless we're
-    // in edit mode and the editor should keep focus).
+    // Focus management for the embedded Trident control (#13/#14).
+    // The OS routes wheel and keyboard input based on focus; without
+    // these handlers, focus stays on FlashDown_Main and the IE Server
+    // never receives scroll events. The diagnostic (Ctrl+F12 build)
+    // confirmed: SetFocus on the IE Server takes successfully and
+    // scroll input is processed once it has focus.
     case WM_SETFOCUS:
         if (!EditModeController::IsActive())
             BrowserHost::FocusBrowser();
