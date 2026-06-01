@@ -4,7 +4,10 @@
 // INCLUDE ORDER IS CRITICAL:
 // atlbase.h establishes COM infrastructure before any COM/Shell headers.
 //
-// HTML loading: IHTMLDocument2::write() via SAFEARRAY.
+// HTML loading: IPersistStreamInit::Load() fast path (bypasses SAFEARRAY
+// and document.open/write/close, saving ~5-10ms). Falls back to the
+// original IHTMLDocument2::write() path if IPersistStreamInit is absent
+// (should never happen on supported Windows versions).
 // No WaitReady() / message pumping — all document readiness is handled
 // via the DWebBrowserEvents2 event sink (DISPID_DOCUMENTCOMPLETE).
 //
@@ -16,6 +19,7 @@
 #include <atlhost.h>
 
 #include <windows.h>
+#include <ocidl.h>        // IPersistStreamInit
 #include <exdisp.h>
 #include <exdispid.h>
 #include <mshtml.h>
@@ -26,6 +30,29 @@
 #include <string>
 
 #include "BrowserHost.h"
+
+// ---------------------------------------------------------------------------
+// Benchmarking: set to 1 to emit WriteHTML() timing to OutputDebugStringW.
+// Build Release, run with DebugView (SysInternals), open the same file on
+// old vs new builds, compare the logged values.
+// ---------------------------------------------------------------------------
+#define BENCHMARK_HTML_WRITE 0
+#if BENCHMARK_HTML_WRITE
+#include <stdio.h>
+#define BENCH_START() LARGE_INTEGER _freq, _t0, _t1; \
+                      QueryPerformanceFrequency(&_freq); \
+                      QueryPerformanceCounter(&_t0)
+#define BENCH_END(lbl) QueryPerformanceCounter(&_t1); do { \
+    double _ms = (double)(_t1.QuadPart - _t0.QuadPart) * 1000.0 / _freq.QuadPart; \
+    wchar_t _buf[128]; int _n = swprintf_s(_buf, L"[WriteHTML] %s: %.3f ms", \
+                                           (lbl), _ms); \
+    if (_n > 0) OutputDebugStringW(_buf); \
+    QueryPerformanceCounter(&_t0); \
+} while(0)
+#else
+#define BENCH_START()  ((void)0)
+#define BENCH_END(lbl) ((void)0)
+#endif
 
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "oleaut32.lib")
@@ -47,24 +74,86 @@ static HWND FindIEServerRecursive(HWND hParent);
 static void InstallUIHandler();
 
 // ---------------------------------------------------------------------------
-// Write html into the live document via IHTMLDocument2::write().
+// Write html into the live document.
 // Returns false if the document object is not yet available.
+//
+// Fast path: IPersistStreamInit::Load() — bypasses document.open/write/close
+// and the SAFEARRAY/BSTR allocation dance. Single COM call loads and renders
+// the HTML in one shot via an in-memory IStream. Saves ~5-10ms.
+//
+// Slow path: IHTMLDocument2::open/write/close + SAFEARRAY — the original
+// approach. Only reached if IPersistStreamInit QI fails (should never happen
+// on supported Windows versions, but kept as a defensive fallback).
 // ---------------------------------------------------------------------------
 static bool WriteHTML(const std::wstring& html)
 {
+    BENCH_START();
     if (!s_pBrowser) return false;
 
     IDispatch* pDisp = nullptr;
     if (FAILED(s_pBrowser->get_Document(&pDisp)) || !pDisp)
         return false;
 
+    // --- Fast path: IPersistStreamInit::Load() ----------------------------
+    // Reduces COM round-trips from ~7 (open + write + close + SAFEARRAY
+    // alloc/fill/destroy + BSTR alloc/free) to 1 (Load).
+    HRESULT hr;
+    IPersistStreamInit* pPSI = nullptr;
+    hr = pDisp->QueryInterface(IID_IPersistStreamInit,
+                                reinterpret_cast<void**>(&pPSI));
+    if (SUCCEEDED(hr) && pPSI)
+    {
+        // InitNew() resets the document to uninitialised state so Load()
+        // succeeds even on a document that was previously written.
+        // On a fresh document this is a harmless no-op.
+        pPSI->InitNew();
+
+        // Build an IStream over the UTF-16 HTML buffer.
+        // CreateStreamOnHGlobal with fDeleteOnRelease=TRUE gives the stream
+        // ownership of the HGLOBAL — no separate free needed on success.
+        const UINT cb = static_cast<UINT>(html.size() * sizeof(wchar_t));
+        HGLOBAL hGlobal = GlobalAlloc(GMEM_MOVEABLE, cb);
+        if (hGlobal)
+        {
+            void* pData = GlobalLock(hGlobal);
+            if (pData)
+            {
+                memcpy(pData, html.c_str(), cb);
+                GlobalUnlock(hGlobal);
+            }
+            IStream* pStream = nullptr;
+            hr = CreateStreamOnHGlobal(hGlobal, TRUE, &pStream);
+            if (SUCCEEDED(hr) && pStream)
+            {
+                hr = pPSI->Load(pStream);
+                pStream->Release();
+            }
+            else
+            {
+                GlobalFree(hGlobal);
+                hr = E_OUTOFMEMORY;
+            }
+        }
+        else
+        {
+            hr = E_OUTOFMEMORY;
+        }
+        pPSI->Release();
+        pDisp->Release();
+        BENCH_END(L"IPersistStreamInit::Load");
+        return SUCCEEDED(hr);
+    }
+
+    // --- Slow path: SAFEARRAY + document.write() --------------------------
+    // Kept as a defensive fallback; Trident in all supported Windows
+    // versions (7+) supports IPersistStreamInit, so this code is unlikely
+    // to execute outside of a corrupted COM registration.
     IHTMLDocument2* pDoc = nullptr;
-    HRESULT hr = pDisp->QueryInterface(IID_IHTMLDocument2,
-                                        reinterpret_cast<void**>(&pDoc));
+    hr = pDisp->QueryInterface(IID_IHTMLDocument2,
+                                reinterpret_cast<void**>(&pDoc));
     pDisp->Release();
     if (FAILED(hr) || !pDoc) return false;
 
-    // document.open() clears existing content and opens document for writing.
     {
         VARIANT vEmpty; VariantInit(&vEmpty);
         BSTR bstrMime = SysAllocString(L"text/html");
@@ -74,7 +163,6 @@ static bool WriteHTML(const std::wstring& html)
         if (pWin) pWin->Release();
     }
 
-    // document.write([html])
     SAFEARRAY* psa = SafeArrayCreateVector(VT_VARIANT, 0, 1);
     if (psa)
     {
@@ -91,6 +179,7 @@ static bool WriteHTML(const std::wstring& html)
 
     pDoc->close();
     pDoc->Release();
+    BENCH_END(L"SAFEARRAY write (fallback)");
     return SUCCEEDED(hr);
 }
 
@@ -266,8 +355,9 @@ public:
 static CUIHandler* s_pUIHandler = nullptr;
 
 // Install our IDocHostUIHandler on the live document via ICustomDoc.
-// Must be called every time a new document is loaded (each navigation /
-// document.write produces a fresh IHTMLDocument and the binding is lost).
+// Must be called every time a new document is loaded (each IPersistStreamInit
+// ::Load(), document.write(), or navigation produces a fresh IHTMLDocument
+// and the binding is lost).
 static void InstallUIHandler()
 {
     if (!s_pBrowser) return;
@@ -375,9 +465,10 @@ void BrowserHost::NavigateTo(const std::wstring& html)
 {
     if (!s_pBrowser) return;
 
-    // Try to write immediately. If the document isn't ready (e.g. a prior
-    // document.open() is still in flight), navigate to about:blank and let
-    // the DocumentComplete sink deliver the HTML.
+    // Try to write immediately via IPersistStreamInit::Load() fast path.
+    // If the document isn't ready (e.g. about:blank still loading on first
+    // paint), navigate to about:blank and let the DocumentComplete sink
+    // deliver the HTML.
     if (!WriteHTML(html))
     {
         s_pendingHTML = html;

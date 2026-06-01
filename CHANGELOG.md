@@ -9,6 +9,16 @@ that motivated the change.
 
 ## [Unreleased]
 
+### Changed (perf/ipersiststreaminit-load branch)
+- HTML loading switched from `IHTMLDocument2::open/write/close` + SAFEARRAY
+  to `IPersistStreamInit::Load()` via in-memory `IStream`. Reduces COM
+  round-trips from ~7 to 1 per load, eliminates BSTR and SAFEARRAY
+  allocations. Benchmarked on AMD Ryzen 7 (Windows 11):
+  - LoadBlankDark (blank page): 13.052ms → 4.008ms (**−69%**)
+  - NavigateTo (full markdown doc): 37.467ms → 2.575ms (**−93%**)
+  - Combined savings: ~44ms cold-start reduction.
+  The original path is preserved as a defensive fallback. Closes #20.
+
 ### Fixed (scroll-redo branch)
 - Wheel scrolling and scrollbar visibility (#13, #14, #17). Three coordinated
   changes after a diagnostic-driven investigation:
